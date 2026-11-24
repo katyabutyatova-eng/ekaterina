@@ -1,10 +1,111 @@
-<!DOCTYPE html>
+<<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>Галактическая Оборона</title>
-  <link rel="stylesheet" href="style.css">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      padding: 12px;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: radial-gradient(circle at 30% 20%, #2b2250, #150f28);
+      color: #eae6f7;
+      overscroll-behavior: none; /* без подтягивания страницы на телефоне */
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .wrap {
+      text-align: center;
+      width: 100%;
+      max-width: 800px;
+    }
+
+    h1 {
+      font-size: clamp(18px, 4.5vw, 26px);
+      margin-bottom: 8px;
+    }
+
+    .hud {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px 18px;
+      margin: 0 auto 8px;
+      padding: 8px 12px;
+      background: #241c3d;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+
+    .hud b {
+      color: #fbbf24;
+    }
+
+    /* канвас растягивается на ширину экрана, пропорции 800:600 сохраняются */
+    .canvas-box {
+      position: relative;
+      width: 100%;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    canvas {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      background: #1a1430;
+      border: 2px solid #3d3455;
+      border-radius: 12px;
+      display: block;
+      touch-action: none; /* касания не скроллят и не зумят страницу */
+    }
+
+    .controls {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .controls button {
+      padding: 14px 20px;
+      border: none;
+      border-radius: 12px;
+      background: #8b5cf6;
+      color: #fff;
+      font-size: 15px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .controls button:hover {
+      background: #7c4ddb;
+    }
+
+    .controls button:active {
+      background: #6d3fc9;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: #9d92bd;
+      font-size: 13px;
+    }
+  </style>
 </head>
 <body>
   <main class="wrap">
@@ -13,16 +114,417 @@
       <span>Счёт: <b id="score">0</b></span>
       <span>Кристаллы: <b id="resources">0</b></span>
       <span>Волна: <b id="wave">1</b></span>
-      <span>Жизни: <b id="lives">❤️❤️❤️</b></span>
+      <span>Жизни: <b id="lives">❤️❤️❤️</span></b>
     </div>
-    <canvas id="game" width="800" height="600"></canvas>
+    <div class="canvas-box">
+      <canvas id="game" width="800" height="600"></canvas>
+    </div>
     <div class="controls">
-      <button id="upgrade-btn" onclick="upgradeShip()">Улучшить корабль (60 💎)</button>
+      <button id="upgrade-btn" onclick="upgradeShip()">Улучшить корабль (60 💎) · ур. 1</button>
       <button id="start-btn" onclick="restartGame()">Начать игру</button>
     </div>
-    <p class="hint">WASD или стрелки — движение, пробел — огонь. Собирайте 💎 и улучшайте корабль!</p>
+    <p class="hint">
+      Компьютер: WASD/стрелки + пробел. Телефон: ведите пальцем — корабль двигается и стреляет сам.
+    </p>
   </main>
 
-  <script src="script.js"></script>
+  <script>
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width;
+    const H = canvas.height;
+
+    const scoreEl = document.getElementById("score");
+    const resEl = document.getElementById("resources");
+    const waveEl = document.getElementById("wave");
+    const livesEl = document.getElementById("lives");
+    const upgradeBtn = document.getElementById("upgrade-btn");
+
+    let ship, bullets, enemyBullets, enemies, crystals, particles, stars;
+    let score, resources, lives, wave, upgradeLevel;
+    let spawnTimer, waveTimer, running, message, best;
+    best = Number(localStorage.getItem("galaxyBest")) || 0;
+
+    const keys = {};
+    let pointerActive = false;   // палец или мышь на канвасе
+    let mouseX = W / 2, mouseY = H - 70;
+    // определяем тач-устройство: на нём включаем автострельбу
+    let isTouch = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+
+    document.addEventListener("keydown", (e) => {
+      const moveCodes = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyW", "KeyA", "KeyS", "KeyD", "Space"];
+      if (moveCodes.includes(e.code)) e.preventDefault();
+      keys[e.code] = true;
+      if (e.code === "Space" && !running) restartGame();
+    });
+    document.addEventListener("keyup", (e) => keys[e.code] = false);
+
+    // перевод координат курсора/пальца во внутренние координаты канваса
+    function toCanvas(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (clientX - rect.left) * (W / rect.width),
+        y: (clientY - rect.top) * (H / rect.height)
+      };
+    }
+
+    // мышь (для десктопа)
+    canvas.addEventListener("mousemove", (e) => {
+      const p = toCanvas(e.clientX, e.clientY);
+      mouseX = p.x; mouseY = p.y;
+      pointerActive = true;
+    });
+    canvas.addEventListener("mouseleave", () => pointerActive = false);
+
+    // палец (для телефона)
+    canvas.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      if (!running) restartGame(); // тап по экрану = старт, как пробел
+      const t = e.touches[0];
+      const p = toCanvas(t.clientX, t.clientY);
+      mouseX = p.x; mouseY = p.y;
+      pointerActive = true;
+    }, { passive: false });
+
+    canvas.addEventListener("touchmove", (e) => {
+      e.preventDefault();
+      const t = e.touches[0];
+      const p = toCanvas(t.clientX, t.clientY);
+      mouseX = p.x; mouseY = p.y;
+      pointerActive = true;
+    }, { passive: false });
+
+    canvas.addEventListener("touchend", (e) => {
+      e.preventDefault();
+      if (e.touches.length === 0) pointerActive = false;
+    }, { passive: false });
+
+    stars = Array.from({ length: 90 }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      s: Math.random() * 2 + 0.5,
+      v: Math.random() * 0.6 + 0.2
+    }));
+
+    function reset() {
+      ship = { x: W / 2, y: H - 70, w: 42, h: 36, speed: 5.2, cd: 0 };
+      bullets = [];
+      enemyBullets = [];
+      enemies = [];
+      crystals = [];
+      particles = [];
+      score = 0;
+      resources = 0;
+      lives = 3;
+      wave = 1;
+      upgradeLevel = 1;
+      spawnTimer = 60;
+      waveTimer = 0;
+      message = "";
+      updateHud();
+    }
+
+    function upgradeCost() {
+      return 60 + (upgradeLevel - 1) * 40;
+    }
+
+    function updateHud() {
+      scoreEl.textContent = score;
+      resEl.textContent = resources;
+      waveEl.textContent = wave;
+      livesEl.textContent = "❤️".repeat(Math.max(0, lives)) || "—";
+      upgradeBtn.textContent = `Улучшить корабль (${upgradeCost()} 💎) · ур. ${upgradeLevel}`;
+    }
+
+    function restartGame() {
+      reset();
+      running = true;
+    }
+
+    function upgradeShip() {
+      const cost = upgradeCost();
+      if (!running || resources < cost) return;
+      resources -= cost;
+      upgradeLevel++;
+      updateHud();
+    }
+
+    function gameOver() {
+      running = false;
+      if (score > best) {
+        best = score;
+        localStorage.setItem("galaxyBest", best);
+      }
+      message = `Игра окончена! Счёт: ${score} · Рекорд: ${best}`;
+    }
+
+    function boom(x, y, color, n = 14) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const v = Math.random() * 3 + 1;
+        particles.push({
+          x, y,
+          vx: Math.cos(a) * v,
+          vy: Math.sin(a) * v,
+          life: 30 + Math.random() * 20,
+          color
+        });
+      }
+    }
+
+    function spawnEnemy() {
+      const roll = Math.random();
+      const x = Math.random() * (W - 60) + 30;
+      if (wave >= 2 && roll < 0.2) {
+        enemies.push({ type: "shooter", x, y: -30, r: 18, hp: 3, stopY: 90 + Math.random() * 80, shootCd: 60 });
+      } else if (roll < 0.55) {
+        enemies.push({ type: "zigzag", x, y: -30, r: 16, hp: 2, phase: Math.random() * Math.PI * 2 });
+      } else {
+        enemies.push({ type: "grunt", x, y: -30, r: 15, hp: 1 });
+      }
+    }
+
+    function moveShip() {
+      // на тач-устройствах управление только пальцем, клавиатуры может не быть
+      if (pointerActive) {
+        ship.x += (mouseX - ship.x) * 0.25;
+        const targetY = Math.max(80, Math.min(H - 30, mouseY));
+        ship.y += (targetY - ship.y) * 0.25;
+      }
+      let dx = 0, dy = 0;
+      if (keys["ArrowLeft"] || keys["KeyA"]) dx -= 1;
+      if (keys["ArrowRight"] || keys["KeyD"]) dx += 1;
+      if (keys["ArrowUp"] || keys["KeyW"]) dy -= 1;
+      if (keys["ArrowDown"] || keys["KeyS"]) dy += 1;
+      ship.x += dx * ship.speed;
+      ship.y += dy * ship.speed;
+      ship.x = Math.max(24, Math.min(W - 24, ship.x));
+      ship.y = Math.max(80, Math.min(H - 30, ship.y));
+    }
+
+    function tryShoot() {
+      // автострельба на телефоне, на десктопе — пробел
+      const wantFire = isTouch ? running : keys["Space"];
+      if (wantFire && ship.cd <= 0) {
+        bullets.push({ x: ship.x, y: ship.y - 22, vy: -9, dmg: 1 + Math.floor(upgradeLevel / 2) });
+        if (upgradeLevel >= 3) {
+          bullets.push({ x: ship.x - 14, y: ship.y - 14, vy: -9, dmg: 1 + Math.floor(upgradeLevel / 2) });
+          bullets.push({ x: ship.x + 14, y: ship.y - 14, vy: -9, dmg: 1 + Math.floor(upgradeLevel / 2) });
+        }
+        ship.cd = Math.max(6, 20 - upgradeLevel * 2);
+      }
+      ship.cd--;
+    }
+
+    function update() {
+      moveShip();
+      tryShoot();
+
+      waveTimer++;
+      if (waveTimer > 900) {
+        waveTimer = 0;
+        wave++;
+        updateHud();
+      }
+
+      spawnTimer--;
+      if (spawnTimer <= 0) {
+        spawnEnemy();
+        spawnTimer = Math.max(20, 70 - wave * 5);
+      }
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y += bullets[i].vy;
+        if (bullets[i].y < -10) bullets.splice(i, 1);
+      }
+
+      for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        const fallSpeed = 1.2 + wave * 0.12;
+
+        if (e.type === "grunt") {
+          e.y += fallSpeed;
+        } else if (e.type === "zigzag") {
+          e.y += fallSpeed * 0.9;
+          e.phase += 0.06;
+          e.x += Math.cos(e.phase) * 2.2;
+          e.x = Math.max(20, Math.min(W - 20, e.x));
+        } else {
+          if (e.y < e.stopY) e.y += fallSpeed;
+          e.shootCd--;
+          if (e.shootCd <= 0) {
+            const ang = Math.atan2(ship.y - e.y, ship.x - e.x);
+            enemyBullets.push({ x: e.x, y: e.y + 12, vx: Math.cos(ang) * 3.5, vy: Math.sin(ang) * 3.5 });
+            e.shootCd = Math.max(40, 110 - wave * 6);
+          }
+        }
+
+        if (Math.hypot(e.x - ship.x, e.y - ship.y) < e.r + 18) {
+          enemies.splice(i, 1);
+          boom(e.x, e.y, "#f87171");
+          lives--;
+          updateHud();
+          if (lives <= 0) { gameOver(); return; }
+          continue;
+        }
+
+        if (e.y > H + 40) enemies.splice(i, 1);
+      }
+
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        const b = enemyBullets[i];
+        b.x += b.vx;
+        b.y += b.vy;
+        if (Math.hypot(b.x - ship.x, b.y - ship.y) < 16) {
+          enemyBullets.splice(i, 1);
+          lives--;
+          updateHud();
+          if (lives <= 0) { gameOver(); return; }
+        } else if (b.y > H + 10 || b.y < -10 || b.x < -10 || b.x > W + 10) {
+          enemyBullets.splice(i, 1);
+        }
+      }
+
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        for (let j = enemies.length - 1; j >= 0; j--) {
+          const e = enemies[j];
+          if (Math.hypot(bullets[i].x - e.x, bullets[i].y - e.y) < e.r + 4) {
+            e.hp -= bullets[i].dmg;
+            bullets.splice(i, 1);
+            if (e.hp <= 0) {
+              boom(e.x, e.y, "#8b5cf6", 18);
+              score += e.type === "shooter" ? 25 : e.type === "zigzag" ? 15 : 10;
+              if (Math.random() < 0.4) {
+                crystals.push({ x: e.x, y: e.y, vy: 1.6, phase: Math.random() * Math.PI * 2 });
+              }
+              enemies.splice(j, 1);
+              updateHud();
+            }
+            break;
+          }
+        }
+      }
+
+      for (let i = crystals.length - 1; i >= 0; i--) {
+        const c = crystals[i];
+        c.y += c.vy;
+        c.phase += 0.1;
+        if (Math.hypot(c.x - ship.x, c.y - ship.y) < 26) {
+          crystals.splice(i, 1);
+          resources += 10;
+          score += 5;
+          updateHud();
+        } else if (c.y > H + 20) {
+          crystals.splice(i, 1);
+        }
+      }
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+
+      stars.forEach(s => {
+        s.y += s.v;
+        if (s.y > H) { s.y = 0; s.x = Math.random() * W; }
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+
+      ctx.fillStyle = "rgba(255,255,255,0.7)";
+      stars.forEach(s => ctx.fillRect(s.x, s.y, s.s, s.s));
+
+      crystals.forEach(c => {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.rotate(Math.sin(c.phase) * 0.4);
+        ctx.fillStyle = "#34d399";
+        ctx.beginPath();
+        ctx.moveTo(0, -10);
+        ctx.lineTo(7, 0);
+        ctx.lineTo(0, 10);
+        ctx.lineTo(-7, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      });
+
+      ctx.fillStyle = "#fbbf24";
+      bullets.forEach(b => ctx.fillRect(b.x - 2, b.y - 8, 4, 12));
+
+      ctx.fillStyle = "#f87171";
+      enemyBullets.forEach(b => {
+        ctx.beginPath();
+        ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      enemies.forEach(e => {
+        const colors = { grunt: "#f472b6", zigzag: "#38bdf8", shooter: "#f87171" };
+        ctx.fillStyle = colors[e.type];
+        ctx.beginPath();
+        ctx.ellipse(e.x, e.y, e.r, e.r * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(e.x, e.y - 6, e.r * 0.45, Math.PI, 0);
+        ctx.fill();
+        if (e.hp > 1) {
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(e.x - e.r, e.y - e.r - 8, e.r * 2, 3);
+          ctx.fillStyle = "#34d399";
+          ctx.fillRect(e.x - e.r, e.y - e.r - 8, e.r * 2 * (e.hp / 3), 3);
+        }
+      });
+
+      particles.forEach(p => {
+        ctx.globalAlpha = Math.max(0, p.life / 50);
+        ctx.fillStyle = p.color;
+        ctx.fillRect(p.x - 2, p.y - 2, 4, 4);
+      });
+      ctx.globalAlpha = 1;
+
+      ctx.fillStyle = "#8b5cf6";
+      ctx.beginPath();
+      ctx.moveTo(ship.x, ship.y - 20);
+      ctx.lineTo(ship.x - 20, ship.y + 16);
+      ctx.lineTo(ship.x + 20, ship.y + 16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = Math.random() < 0.5 ? "#fbbf24" : "#f97316";
+      ctx.fillRect(ship.x - 4, ship.y + 16, 8, 6 + Math.random() * 6);
+
+      if (!running) {
+        ctx.fillStyle = "rgba(15, 10, 35, 0.78)";
+        ctx.fillRect(0, 0, W, H);
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#eae6f7";
+        ctx.font = "bold 30px Segoe UI, Arial";
+        ctx.fillText(message || "Готовы к обороне?", W / 2, H / 2 - 20);
+        ctx.fillStyle = "#9d92bd";
+        ctx.font = "16px Segoe UI, Arial";
+        const startHint = isTouch ? "Коснитесь экрана — старт" : "Пробел или кнопка «Начать игру» — старт";
+        ctx.fillText(startHint, W / 2, H / 2 + 24);
+      }
+    }
+
+    function loop() {
+      if (running) {
+        update();
+      } else {
+        moveShip();
+      }
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    reset();
+    running = false;
+    loop();
+  </script>
 </body>
 </html>
